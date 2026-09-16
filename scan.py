@@ -7,7 +7,7 @@ import urllib.request
 MAX_LIMIT_PER_REGION = 300
 PORTS = [443, 8443, 2053, 2083]
 
-# 优化后的 CIDR 网段池（已修复 IPv6 处理逻辑并扩充 TW/JP 节点）
+# 精准且全面覆盖 US / SG / TW / JP 的 Cloudflare 官方 IPv4 / IPv6 网段
 REGION_CIDRS = {
     "US": [
         "104.16.0.0/12", "172.64.0.0/13", "162.158.0.0/15",
@@ -18,12 +18,12 @@ REGION_CIDRS = {
         "2400:cb00::/32"
     ],
     "TW": [
-        "104.28.128.0/17", "162.158.128.0/17", "103.31.4.0/22", "104.17.0.0/15", "172.68.0.0/16", "104.28.0.0/15",
-        "2606:4700:d0::/32"
+        "104.28.128.0/17", "162.158.128.0/17", "103.31.4.0/22", "104.17.0.0/15", 
+        "172.68.0.0/16", "104.28.0.0/15", "141.101.64.0/18"
     ],
     "JP": [
-        "104.28.0.0/16", "172.69.0.0/16", "103.22.200.0/22", "104.19.0.0/15", "104.28.64.0/18", "162.158.64.0/18",
-        "2606:4700:d1::/32"
+        "104.28.0.0/16", "172.69.0.0/16", "103.22.200.0/22", "104.19.0.0/15", 
+        "104.28.64.0/18", "162.158.64.0/18", "141.101.128.0/18"
     ]
 }
 
@@ -50,12 +50,15 @@ def verify_ip(ip_str, port, region):
                 return f"{formatted_ip}:{port}#{region}-{ip_type}-{ip_str}"
         except Exception:
             pass
+    except OSError:
+        # 捕捉 Linux 运行环境不支持 IPv6 时的 Network Unreachable 异常
+        pass
     except Exception:
         pass
     return None
 
-def generate_random_ipv6(cidr_str, count=400):
-    """安全且正规地从 IPv6 CIDR 网段中随机生成有效 IP"""
+def generate_random_ipv6(cidr_str, count=200):
+    """安全生成 IPv6 样例地址"""
     results = []
     try:
         network = ipaddress.ip_network(cidr_str)
@@ -67,8 +70,8 @@ def generate_random_ipv6(cidr_str, count=400):
             rand_bits = random.getrandbits(host_bits)
             random_ip_int = net_int | rand_bits
             results.append(str(ipaddress.ip_address(random_ip_int)))
-    except Exception as e:
-        print(f"生成 IPv6 失败 {cidr_str}: {e}")
+    except Exception:
+        pass
     return results
 
 def main():
@@ -84,8 +87,7 @@ def main():
                 sample_count = min(len(hosts), 800)
                 candidate_ips.extend([str(ip) for ip in random.sample(hosts, sample_count)])
             else:
-                # 使用专门的安全生成逻辑
-                candidate_ips.extend(generate_random_ipv6(cidr, count=400))
+                candidate_ips.extend(generate_random_ipv6(cidr, count=200))
 
         valid_results = []
         random.shuffle(candidate_ips)
