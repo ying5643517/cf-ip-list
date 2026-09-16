@@ -7,22 +7,23 @@ import urllib.request
 MAX_LIMIT_PER_REGION = 300
 PORTS = [443, 8443, 2053, 2083]
 
+# 优化后的 CIDR 网段池（已为 JP 和 TW 扩充大量有效网段）
 REGION_CIDRS = {
     "US": [
-        "104.16.0.0/12", "172.64.0.0/13",
+        "104.16.0.0/12", "172.64.0.0/13", "162.158.0.0/15",
         "2606:4700::/32"
     ],
     "SG": [
-        "104.28.0.0/16", "172.67.0.0/16",
+        "104.28.0.0/16", "172.67.0.0/16", "103.21.244.0/22", "104.18.0.0/15",
         "2400:cb00::/32"
     ],
     "TW": [
-        "104.28.128.0/17", "162.158.128.0/17",
-        "2606:4700:d0::/48"
+        "104.28.128.0/17", "162.158.128.0/17", "103.31.4.0/22", "104.17.0.0/15", "172.68.0.0/16", "104.28.0.0/15",
+        "2606:4700:d0::/32"
     ],
     "JP": [
-        "104.28.0.0/16", "172.69.0.0/16",
-        "2606:4700:d1::/48"
+        "104.28.0.0/16", "172.69.0.0/16", "103.22.200.0/22", "104.19.0.0/15", "104.28.64.0/18", "162.158.64.0/18",
+        "2606:4700:d1::/32"
     ]
 }
 
@@ -34,14 +35,14 @@ def verify_ip(ip_str, port, region):
         
         family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
         s = socket.socket(family, socket.SOCK_STREAM)
-        s.settimeout(1.0)
+        s.settimeout(1.2) # 适当提高超时时间，提高较远节点的握手成功率
         s.connect((ip_str, port))
         s.close()
 
         req_url = f"http://{formatted_ip}:{port}/"
         req = urllib.request.Request(req_url, headers={"User-Agent": "Mozilla/5.0"})
         try:
-            urllib.request.urlopen(req, timeout=1.0)
+            urllib.request.urlopen(req, timeout=1.2)
         except urllib.error.HTTPError as e:
             server_header = e.headers.get("Server", "").lower()
             if "cloudflare" in server_header or e.code in [400, 403, 405]:
@@ -63,11 +64,12 @@ def main():
             net = ipaddress.ip_network(cidr)
             if net.version == 4:
                 hosts = list(net.hosts())
-                sample_count = min(len(hosts), 600)
+                # 增大抽样基数，确保能扫出足够的活 IP
+                sample_count = min(len(hosts), 800)
                 candidate_ips.extend([str(ip) for ip in random.sample(hosts, sample_count)])
             else:
                 prefix = str(net.network_address)[:-1]
-                for _ in range(300):
+                for _ in range(400):
                     rand_suffix = ":".join(f"{random.randint(0, 65535):x}" for _ in range(4))
                     candidate_ips.append(f"{prefix}{rand_suffix}")
 
@@ -86,13 +88,13 @@ def main():
 
         print(f"{region} 地区完成，获取 {len(valid_results)} 个有效 IP。")
         
-        # 写入地区文件
+        # 写入地区 txt 文件
         with open(f"{region.lower()}.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(valid_results))
 
         all_region_results.extend(valid_results)
 
-    # 写入汇总文件
+    # 写入汇总 txt 文件
     with open("all.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(all_region_results))
 
