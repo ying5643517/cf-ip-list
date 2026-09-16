@@ -1,0 +1,136 @@
+name: Regional CF Official Port Scanner (IPv4 + IPv6)
+
+on:
+  schedule:
+    # 北京时间 00:00 (对应 UTC 时间 16:00) 自动触发
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scan-ips:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 执行 IPv4 & IPv6 混合扫描
+        run: |
+          python3 -c '
+          import concurrent.futures, socket, urllib.request, random, ipaddress
+
+          MAX_LIMIT_PER_REGION = 300 
+          PORTS = [443, 8443, 2053, 2083]
+
+          # 加入 Cloudflare 官方 IPv6 常用网段
+          REGION_CIDRS = {
+              "US": [
+                  "104.16.0.0/12", "172.64.0.0/13",
+                  "2606:4700::/32" # US/Global IPv6
+              ],
+              "SG": [
+                  "104.28.0.0/16", "172.67.0.0/16",
+                  "2400:cb00::/32" # Asia/SG IPv6
+              ],
+              "TW": [
+                  "104.28.128.0/17", "162.158.128.0/17",
+                  "2606:4700:d0::/48" # TW IPv6
+              ],
+              "JP": [
+                  "104.28.0.0/16", "172.69.0.0/16",
+                  "2606:4700:d1::/48" # JP IPv6
+              ]
+          }
+
+          def verify_ip(ip_str, port, region):
+              """自动识别 IPv4 或 IPv6 并进行连接校验"""
+              try:
+                  ip_obj = ipaddress.ip_address(ip_str)
+                  # 判断是 IPv6 还是 IPv4
+                  is_ipv6 = ip_obj.version == 6
+                  
+                  # 格式化 IP (IPv6 需加中括号)
+                  formatted_ip = f"[{ip_str}]" if is_ipv6 else ip_str
+                  
+                  # 创建对应的 Socket (AF_INET6 或 AF_INET)
+                  family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+                  s = socket.socket(family, socket.SOCK_STREAM)
+                  s.settimeout(1.0)
+                  s.connect((ip_str, port))
+                  s.close()
+
+                  # HTTP 特征校验
+                  req_url = f"http://{formatted_ip}:{port}/"
+                  req = urllib.request.Request(req_url, headers={"User-Agent": "Mozilla/5.0"})
+                  try:
+                      urllib.request.urlopen(req, timeout=1.0)
+                  except urllib.error.HTTPError as e:
+                      server_header = e.headers.get("Server", "").lower()
+                      if "cloudflare" in server_header or e.code in [400, 403, 405]:
+                          ip_type = "v6" if is_ipv6 else "v4"
+                          return f"{formatted_ip}:{port}#{region}-{ip_type}-{ip_str}"
+                  except:
+                      pass
+              except:
+                  pass
+              return None
+
+          all_region_results = []
+
+          for region, cidrs in REGION_CIDRS.items():
+              print(f"=== 开始扫描 {region} 地区节点 (IPv4+IPv6) ===")
+              candidate_ips = []
+              for cidr in cidrs:
+                  net = ipaddress.ip_network(cidr)
+                  if net.version == 4:
+                      hosts = list(net.hosts())
+                      sample_count = min(len(hosts), 600)
+                      candidate_ips.extend([str(ip) for ip in random.sample(hosts, sample_count)])
+                  else:
+                      # IPv6 网段巨大，采用随机生成后缀的方式抽样
+                      prefix = str(net.network_address)[:-1]
+                      for _ in range(300):
+                          rand_suffix = ":".join(f"{random.randint(0, 65535):x}" for _ in range(4))
+                          candidate_ips.append(f"{prefix}{rand_suffix}")
+
+              valid_results = []
+              random.shuffle(candidate_ips)
+
+              with concurrent.futures.ThreadPoolExecutor(max_workers=80) as executor:
+                  futures = []
+                  for ip in candidate_ips:
+                      port = random.choice(PORTS)
+                      futures.append(executor.submit(verify_ip, ip, port, region))
+
+                  for future in concurrent.futures.as_completed(futures):
+                      res = future.result()
+                      if res and res not in valid_results:
+                          valid_results.append(res)
+                          if len(valid_results) >= MAX_LIMIT_PER_REGION:
+                              break
+
+              print(f"{region} 地区扫描完成，最终获取 {len(valid_results)} 个有效节点。")
+              
+              with open(f"{region.lower()}.txt", "w") as f:
+                  f.write("\n".join(valid_results))
+
+              all_region_results.extend(valid_results)
+
+          with open("all.txt", "w") as f:
+              f.write("\n".join(all_region_results))
+          '
+
+      - name: 提交并推送到 GitHub Pages
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add *.txt
+          git commit -m "Auto scan completed (v4+v6): $(date +'%Y-%m-%d %H:%M:%S')" || exit 0
+          git push
