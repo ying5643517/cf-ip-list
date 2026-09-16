@@ -7,7 +7,7 @@ import urllib.request
 MAX_LIMIT_PER_REGION = 300
 PORTS = [443, 8443, 2053, 2083]
 
-# 优化后的 CIDR 网段池（已为 JP 和 TW 扩充大量有效网段）
+# 优化后的 CIDR 网段池（已修复 IPv6 处理逻辑并扩充 TW/JP 节点）
 REGION_CIDRS = {
     "US": [
         "104.16.0.0/12", "172.64.0.0/13", "162.158.0.0/15",
@@ -35,7 +35,7 @@ def verify_ip(ip_str, port, region):
         
         family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
         s = socket.socket(family, socket.SOCK_STREAM)
-        s.settimeout(1.2) # 适当提高超时时间，提高较远节点的握手成功率
+        s.settimeout(1.2)
         s.connect((ip_str, port))
         s.close()
 
@@ -54,6 +54,23 @@ def verify_ip(ip_str, port, region):
         pass
     return None
 
+def generate_random_ipv6(cidr_str, count=400):
+    """安全且正规地从 IPv6 CIDR 网段中随机生成有效 IP"""
+    results = []
+    try:
+        network = ipaddress.ip_network(cidr_str)
+        net_int = int(network.network_address)
+        mask_len = network.prefixlen
+        host_bits = 128 - mask_len
+        
+        for _ in range(count):
+            rand_bits = random.getrandbits(host_bits)
+            random_ip_int = net_int | rand_bits
+            results.append(str(ipaddress.ip_address(random_ip_int)))
+    except Exception as e:
+        print(f"生成 IPv6 失败 {cidr_str}: {e}")
+    return results
+
 def main():
     all_region_results = []
 
@@ -64,14 +81,11 @@ def main():
             net = ipaddress.ip_network(cidr)
             if net.version == 4:
                 hosts = list(net.hosts())
-                # 增大抽样基数，确保能扫出足够的活 IP
                 sample_count = min(len(hosts), 800)
                 candidate_ips.extend([str(ip) for ip in random.sample(hosts, sample_count)])
             else:
-                prefix = str(net.network_address)[:-1]
-                for _ in range(400):
-                    rand_suffix = ":".join(f"{random.randint(0, 65535):x}" for _ in range(4))
-                    candidate_ips.append(f"{prefix}{rand_suffix}")
+                # 使用专门的安全生成逻辑
+                candidate_ips.extend(generate_random_ipv6(cidr, count=400))
 
         valid_results = []
         random.shuffle(candidate_ips)
@@ -88,13 +102,11 @@ def main():
 
         print(f"{region} 地区完成，获取 {len(valid_results)} 个有效 IP。")
         
-        # 写入地区 txt 文件
         with open(f"{region.lower()}.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(valid_results))
 
         all_region_results.extend(valid_results)
 
-    # 写入汇总 txt 文件
     with open("all.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(all_region_results))
 
